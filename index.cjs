@@ -5,18 +5,50 @@ const {
   fetchLatestBaileysVersion,
   DisconnectReason,
 } = require("@whiskeysockets/baileys");
+
 const fs = require("fs");
 const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 const pino = require("pino");
+const express = require("express");
+
+// Global variable to hold latest QR
+let latestQR = null;
+
+// Express server to show QR image
+const app = express();
+const PORT = 3000;
+
+app.get("/", (req, res) => {
+  if (!latestQR) return res.send("QR not generated yet. Please wait...");
+  res.send(`
+    <h2>📱 Scan this QR Code with WhatsApp</h2>
+    <img src="/qr" alt="QR Code" />
+  `);
+});
+
+app.get("/qr", async (req, res) => {
+  if (!latestQR) return res.status(404).send("No QR code available");
+  try {
+    const qrImageBuffer = await QRCode.toBuffer(latestQR);
+    res.writeHead(200, {
+      "Content-Type": "image/png",
+      "Content-Length": qrImageBuffer.length,
+    });
+    res.end(qrImageBuffer);
+  } catch (err) {
+    res.status(500).send("Failed to generate QR image");
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 QR Code web server running at: http://localhost:${PORT}`);
+});
 
 async function startBot() {
-  // Load authentication state from ./auth folder
   const { state, saveCreds } = await useMultiFileAuthState("./auth");
-
-  // Fetch the latest WhatsApp Web version
   const { version } = await fetchLatestBaileysVersion();
 
-  // Set up a logger with trace level support
   const logger = pino({
     level: "trace",
     transport: {
@@ -29,7 +61,6 @@ async function startBot() {
     },
   });
 
-  // Create the WhatsApp socket connection
   const sock = makeWASocket({
     version,
     auth: {
@@ -40,18 +71,18 @@ async function startBot() {
     printQRInTerminal: false,
   });
 
-  // Save credentials whenever updated
   sock.ev.on("creds.update", saveCreds);
 
-  // Handle connection updates
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      latestQR = qr;
       console.log(
         "📱 Scan this QR code with WhatsApp (Linked Devices > Link a Device):"
       );
       qrcode.generate(qr, { small: true });
+      console.log(`🌐 Also available at: http://localhost:${PORT}`);
     }
 
     if (connection === "close") {
@@ -67,17 +98,15 @@ async function startBot() {
     }
   });
 
-  // Track active calls
-  const activeCalls = new Map(); // Store call ID, caller JID, and acceptance status
+  const activeCalls = new Map();
 
-  // Handle call events
   sock.ev.on("call", async (calls) => {
     console.log("📞 Raw call event:", JSON.stringify(calls, null, 2));
     const call = calls[0];
     if (!call) return;
 
     const caller = call.from;
-    const callId = call.id; // Use call.id as the unique key
+    const callId = call.id;
     console.log(
       `📞 Call from ${caller} (ID: ${callId}, Status: ${
         call.status || "unknown"
@@ -86,11 +115,9 @@ async function startBot() {
 
     if (call.status === "ringing") {
       console.log(`📞 Incoming call from ${caller} (Call ID: ${callId})`);
-      // Store call details, assume not accepted initially
       activeCalls.set(callId, { caller, callId, isAccepted: false });
     } else if (call.status === "accept") {
       console.log(`📞 Call accepted from ${caller} (Call ID: ${callId})`);
-      // Mark call as accepted
       if (activeCalls.has(callId)) {
         activeCalls.set(callId, {
           ...activeCalls.get(callId),
@@ -101,16 +128,12 @@ async function startBot() {
       console.log(`📞 Call terminated from ${caller} (Call ID: ${callId})`);
 
       if (activeCalls.has(callId) && !activeCalls.get(callId).isAccepted) {
-        // Delay to ensure call is fully terminated
         await new Promise((resolve) => setTimeout(resolve, 1000));
-
         try {
-          // Check if voice message file exists
           if (!fs.existsSync("./auto_response.mp3")) {
             throw new Error("Voice message file (auto_response.mp3) not found");
           }
 
-          // Send a voice message with retry
           console.log(`Sending voice message to ${caller}`);
           for (let i = 0; i < 3; i++) {
             try {
@@ -131,7 +154,6 @@ async function startBot() {
             }
           }
 
-          // Send a text message with retry
           console.log(`Sending text message to ${caller}`);
           for (let i = 0; i < 3; i++) {
             try {
@@ -151,7 +173,6 @@ async function startBot() {
             `Error handling terminated call from ${caller}:`,
             err.stack
           );
-          // Send a fallback text message
           try {
             await sock.sendMessage(caller, {
               text: "I'm maybe offline or unavailable and couldn't process your call. Please try again later!",
@@ -161,7 +182,6 @@ async function startBot() {
             console.error("Failed to send fallback message:", sendErr.stack);
           }
         } finally {
-          // Clean up
           activeCalls.delete(callId);
         }
       } else {
@@ -177,13 +197,11 @@ async function startBot() {
     }
   });
 
-  // Keep calls.upsert for debugging
   sock.ev.on("calls.upsert", async ({ calls }) => {
     console.log("📞 Calls upsert event:", JSON.stringify(calls, null, 2));
   });
 }
 
-// Run the bot
 startBot().catch((err) => {
   console.error("Failed to start bot:", err);
   process.exit(1);
