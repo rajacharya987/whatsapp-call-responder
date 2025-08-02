@@ -1,8 +1,8 @@
 FROM node:20-slim
 
-# Install dependencies
+# Install system dependencies (add `ca-certificates`)
 RUN apt-get update -qq && apt-get install --no-install-recommends -y \
-  git build-essential python-is-python3 pkg-config \
+  git build-essential python-is-python3 pkg-config ca-certificates \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Force Git to use HTTPS instead of SSH
@@ -12,6 +12,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
+# Install only production dependencies
 RUN npm install --omit=dev
 
 COPY . .
