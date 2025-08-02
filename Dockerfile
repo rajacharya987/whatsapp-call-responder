@@ -8,7 +8,7 @@ RUN apt-get update -qq && apt-get install --no-install-recommends -y \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm install --omit=dev
 
 COPY . .
 
